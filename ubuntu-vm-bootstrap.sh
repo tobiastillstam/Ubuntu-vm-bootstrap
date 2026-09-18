@@ -641,7 +641,17 @@ step_timezone() {
 step_ntp() {
     local conf="/etc/systemd/timesyncd.conf"
     if [[ ! -f "${conf}" ]]; then
-        log_error "systemd-timesyncd config not found at ${conf} -- is timesyncd installed?"
+        if [[ "${DO_FIX}" -eq 1 ]]; then
+            wait_for_apt_lock
+            run "install systemd-timesyncd" env DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y systemd-timesyncd || return 1
+        else
+            log_warn "systemd-timesyncd not installed (no ${conf}). Re-run with --fix to install and configure it."
+            return 0
+        fi
+    fi
+    if [[ "${DRY_RUN}" -eq 0 && ! -f "${conf}" ]]; then
+        log_error "systemd-timesyncd installed but ${conf} still not found -- check manually"
         return 1
     fi
     local current
