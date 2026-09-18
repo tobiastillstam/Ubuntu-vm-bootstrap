@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck ubuntu-vm-bootstrap.sh
+
+  test:
+    needs: shellcheck
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: bash -n ubuntu-vm-bootstrap.sh
+
+      - name: Audit mode (no --fix, no root needed)
+        run: bash ubuntu-vm-bootstrap.sh --yes --verbose
+
+      - name: Dry-run preview of --fix (no root needed)
+        run: bash ubuntu-vm-bootstrap.sh --yes --fix --dry-run --verbose
+
+      # Runners are ephemeral, so applying for real here is safe and gives
+      # genuine coverage - including of hypervisor guest-tools paths the
+      # script's own header notes haven't been exercised on real hardware.
+      - name: Apply core housekeeping for real
+        run: sudo bash ubuntu-vm-bootstrap.sh --yes --fix --verbose
+
+      - name: Re-run --fix (idempotency check)
+        run: sudo bash ubuntu-vm-bootstrap.sh --yes --fix --verbose

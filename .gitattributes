@@ -1,0 +1,6 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Force LF regardless of local core.autocrlf - a CRLF shell script fails
+# outright on Ubuntu (bad interpreter / stray \r in every line).
+*.sh text eol=lf

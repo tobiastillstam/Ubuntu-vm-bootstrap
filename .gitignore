@@ -1,0 +1,14 @@
+# Script output / transcripts
+logs/
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+.vs/
+.vscode/
+*.tmp
+*.bak
+*.swp
+*~
