@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-09-19
+
+### Fixed
+- Baseline packages: `dnsutils` is a fully retired transitional name on
+  Ubuntu 24.04+/26.04 (no dpkg entry, no apt candidate - `bind9-dnsutils` is
+  the real package). Audit mode permanently reported it "missing" and every
+  `--fix` run reinstalled it. Now checks/installs `bind9-dnsutils` directly.
+- `--harden`: the SSH drop-in was named `99-tillnet-hardening.conf`, but
+  sshd applies the *first* value it sees per keyword across all `Include`d
+  files, not the last. On any cloud-init-provisioned VM (`50-cloud-init.conf`
+  sets `PasswordAuthentication yes` and sorts first), the script silently
+  failed to disable password auth while still logging success. Renamed the
+  drop-in to `00-tillnet-hardening.conf` so it sorts first and wins, and
+  added a post-restart check via `sshd -T` that fails loudly instead of
+  claiming success if some other drop-in still overrides it.
+
+### Verified
+- Full live run against Ubuntu 26.04.1 LTS on XCP-ng: audit mode,
+  `--dry-run --fix`, a real `--fix` with every optional category (`--harden`,
+  `--swap`, `--unattended-upgrades`, `--zabbix`), and a second full run to
+  confirm idempotency. Key-based SSH access confirmed intact after
+  `--harden` (no lockout).
+
 ## [1.2.0] - 2026-09-18
 
 First release. Post-install housekeeping for a freshly installed Ubuntu VM, opt-in

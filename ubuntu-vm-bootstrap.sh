@@ -34,7 +34,7 @@
 #     Remote, one-liner (needs an actual controlling terminal for the
 #     wizard's prompts -- an interactive SSH session, not a detached/
 #     scripted one). Use bash explicitly: this script is not POSIX sh.
-#         curl -fsSL https://scripts.tillnet.se/ubuntu-vm-bootstrap.sh | sudo bash
+#         curl -fsSL https://raw.githubusercontent.com/tobiastillstam/Ubuntu-vm-bootstrap/main/ubuntu-vm-bootstrap.sh | sudo bash
 #     Flags still work piped in via `bash -s --`, which also skips the
 #     wizard's mutable-state questions for whatever you pass explicitly
 #     (the wizard still confirms them, just with your value as the default):
@@ -56,7 +56,7 @@
 #     Author  : Tobias Tillstam, Tillnet (https://tillnet.se)
 #     GitHub  : https://github.com/tobiastillstam
 #     License : MIT
-#     Version : 1.2.0
+#     Version : 1.2.1
 #     Requires: bash 4+, coreutils, Ubuntu 22.04/24.04/26.04 with systemd + apt.
 #               Guest tools auto-detect the hypervisor (XCP-ng/Xen, KVM/
 #               Proxmox, VMware, Hyper-V, VirtualBox); only the XCP-ng and
@@ -66,6 +66,13 @@
 #               Interactive mode additionally needs a controlling terminal
 #               (/dev/tty) -- falls back to flags/defaults with a warning
 #               if none is attached.
+#     Tested  : Ubuntu 26.04.1 LTS on XCP-ng -- full run verified live:
+#               audit mode, --dry-run --fix, a real --fix with every
+#               optional category (--harden, --swap, --unattended-upgrades,
+#               --zabbix), and a second full run to confirm idempotency.
+#               Key-based SSH access confirmed intact after --harden.
+#               22.04/24.04 use the same code paths but haven't been
+#               separately re-verified live since v1.2.1.
 #
 #     Conventions (mirrors the Tillnet PowerShell/Bash template):
 #       - Strict mode (set -Eeuo pipefail) is the error-handling backbone.
@@ -100,7 +107,7 @@ IFS=$'\n\t'
 # -----------------------------------------------------------------------------
 # Metadata
 # -----------------------------------------------------------------------------
-readonly VERSION="1.2.0"
+readonly VERSION="1.2.1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 readonly SCRIPT_DIR
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
@@ -144,12 +151,15 @@ if { : < /dev/tty; } 2>/dev/null; then
 fi
 
 # Domain constants
-readonly BASELINE_PACKAGES=(curl wget vim htop unzip net-tools dnsutils tmux
+readonly BASELINE_PACKAGES=(curl wget vim htop unzip net-tools bind9-dnsutils tmux
     git ca-certificates gnupg lsb-release jq tree ncdu)
 readonly ZABBIX_MAJOR_MINOR="7.0"
 readonly ZABBIX_PSK_FILE="/etc/zabbix/zabbix_agent2.psk"
 readonly ZABBIX_AGENT_PORT="10050"   # Agent2's listen port for passive checks
-readonly SSH_DROPIN="/etc/ssh/sshd_config.d/99-tillnet-hardening.conf"
+# sshd applies the first value it sees for each keyword across all Include'd
+# files, so this must sort before other drop-ins (e.g. cloud-init's
+# 50-cloud-init.conf, which sets PasswordAuthentication yes) to win.
+readonly SSH_DROPIN="/etc/ssh/sshd_config.d/00-tillnet-hardening.conf"
 TMP_ZABBIX_DEB=""   # set by step_zabbix_agent2 if it downloads one; cleaned up on exit
 
 # Populated by detect_os(); used by step_zabbix_agent2 for the repo URL
@@ -873,7 +883,17 @@ INNER
         if [[ "${DRY_RUN}" -eq 0 ]]; then
             if sshd -t; then
                 run "restart ssh" bash -c "systemctl restart ssh || systemctl restart sshd" || return 1
-                log_info "SSH hardened: root login and password auth disabled"
+                local effective
+                effective="$(sshd -T 2>/dev/null)"
+                if grep -qi '^passwordauthentication no$' <<<"${effective}" \
+                    && grep -qi '^permitrootlogin no$' <<<"${effective}"; then
+                    log_info "SSH hardened: root login and password auth disabled"
+                else
+                    log_error "SSH hardening did not take effect -- another file in" \
+                        "/etc/ssh/sshd_config.d/ (sorting before ${SSH_DROPIN##*/}) is" \
+                        "still overriding PasswordAuthentication/PermitRootLogin"
+                    return 1
+                fi
             else
                 log_error "sshd -t reported invalid config -- reverting, NOT restarting ssh"
                 rm -f "${SSH_DROPIN}"

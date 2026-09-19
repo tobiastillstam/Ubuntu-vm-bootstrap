@@ -3,7 +3,7 @@
 ![Bash](https://img.shields.io/badge/Bash-4%2B-4EAA25)
 ![Platform](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-E95420)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-1.2.0-blue)
+![Version](https://img.shields.io/badge/version-1.2.1-blue)
 
 Post-install housekeeping for a freshly installed Ubuntu VM. Detects current
 state and reports it; only changes anything when `--fix` is given (always
@@ -23,8 +23,9 @@ otherwise, e.g. under automation or a `curl | bash` pipe.
 - Guest tools matching the detected hypervisor - XCP-ng/Xen, KVM/Proxmox,
   VMware, Hyper-V, VirtualBox (auto-detected via `systemd-detect-virt`,
   override with `--hypervisor`)
-- Baseline CLI packages (curl, wget, vim, htop, unzip, net-tools, dnsutils,
-  tmux, git, ca-certificates, gnupg, lsb-release, jq, tree, ncdu)
+- Baseline CLI packages (curl, wget, vim, htop, unzip, net-tools,
+  bind9-dnsutils, tmux, git, ca-certificates, gnupg, lsb-release, jq, tree,
+  ncdu)
 
 **Optional** (each its own opt-in flag on top of `--fix`):
 
@@ -50,12 +51,19 @@ end-to-end**. VMware, Hyper-V and VirtualBox use documented package names but
 haven't been verified live - see the `NOTE` comments on each
 `step_guest_tools_*` function in the script.
 
+**Tested**: Ubuntu 26.04.1 LTS on XCP-ng, full run verified live - audit
+mode, `--dry-run --fix`, a real `--fix` with every optional category
+(`--harden`, `--swap`, `--unattended-upgrades`, `--zabbix`), and a second
+full run to confirm idempotency. Key-based SSH access confirmed intact after
+`--harden`. 22.04/24.04 use the same code paths but haven't been separately
+re-verified live since v1.2.1.
+
 ---
 
 ## Installation
 
 ```bash
-git clone <this-repo-url> ubuntu-vm-bootstrap
+git clone https://github.com/tobiastillstam/Ubuntu-vm-bootstrap.git ubuntu-vm-bootstrap
 cd ubuntu-vm-bootstrap
 chmod +x ubuntu-vm-bootstrap.sh
 ```
@@ -64,7 +72,7 @@ Or as a remote one-liner (needs an actual controlling terminal for the
 wizard's prompts - an interactive SSH session, not a detached/scripted one):
 
 ```bash
-curl -fsSL https://scripts.tillnet.se/ubuntu-vm-bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/tobiastillstam/Ubuntu-vm-bootstrap/main/ubuntu-vm-bootstrap.sh | sudo bash
 ```
 
 Flags still work piped in via `bash -s --`, which also skips the wizard's
