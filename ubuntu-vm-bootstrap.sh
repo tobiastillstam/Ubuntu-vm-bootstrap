@@ -56,7 +56,7 @@
 #     Author  : Tobias Tillstam, Tillnet (https://tillnet.se)
 #     GitHub  : https://github.com/tobiastillstam
 #     License : MIT
-#     Version : 1.2.1
+#     Version : 1.2.2
 #     Requires: bash 4+, coreutils, Ubuntu 22.04/24.04/26.04 with systemd + apt.
 #               Guest tools auto-detect the hypervisor (XCP-ng/Xen, KVM/
 #               Proxmox, VMware, Hyper-V, VirtualBox); only the XCP-ng and
@@ -107,10 +107,18 @@ IFS=$'\n\t'
 # -----------------------------------------------------------------------------
 # Metadata
 # -----------------------------------------------------------------------------
-readonly VERSION="1.2.1"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+readonly VERSION="1.2.2"
+# BASH_SOURCE is empty (not just unset-to-"") when the script arrives via a
+# `curl | bash` pipe -- there's no file, so fall back to the CWD and the
+# project's own name instead of dereferencing BASH_SOURCE[0] under set -u.
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+    SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
+else
+    SCRIPT_DIR="$(pwd)"
+    SCRIPT_NAME="ubuntu-vm-bootstrap"
+fi
 readonly SCRIPT_DIR
-SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}" .sh)"
 readonly SCRIPT_NAME
 readonly DEFAULT_LOG_DIR="${SCRIPT_DIR}/logs"
 

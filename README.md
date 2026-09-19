@@ -3,7 +3,7 @@
 ![Bash](https://img.shields.io/badge/Bash-4%2B-4EAA25)
 ![Platform](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-E95420)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-1.2.1-blue)
+![Version](https://img.shields.io/badge/version-1.2.2-blue)
 
 Post-install housekeeping for a freshly installed Ubuntu VM. Detects current
 state and reports it; only changes anything when `--fix` is given (always

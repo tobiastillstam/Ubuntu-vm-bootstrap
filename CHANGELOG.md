@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-09-19
+
+### Fixed
+- The documented `curl | bash` one-liner crashed immediately with
+  `BASH_SOURCE[0]: unbound variable`. Piping the script into `bash -s --`
+  leaves `BASH_SOURCE` empty (no source file), and `set -u` turns
+  dereferencing `BASH_SOURCE[0]` into a hard error before the script gets
+  anywhere near the wizard/TTY logic that was supposed to handle the pipe
+  case. `SCRIPT_DIR`/`SCRIPT_NAME` now fall back to the CWD and the
+  project's own name when there's no `BASH_SOURCE[0]` to read. Found by
+  actually running the documented one-liner end-to-end against the test VM
+  after making the repo public, rather than just `scp`-ing the file over.
+
 ## [1.2.1] - 2026-09-19
 
 ### Fixed
