@@ -6,7 +6,8 @@
 #     Runs inside the guest, post-boot. Detects current state and reports it;
 #     only changes anything when --fix is given (still previewable via
 #     --dry-run). Core steps always run when in scope: enable universe repo,
-#     full apt update/upgrade, timezone, NTP (systemd-timesyncd), guest tools
+#     full apt update/upgrade, timezone, NTP (systemd-timesyncd, or chrony on
+#     Ubuntu 25.10+/26.04 -- see step_ntp()), guest tools
 #     matching the detected hypervisor (XCP-ng/Xen, KVM/Proxmox, VMware,
 #     Hyper-V, VirtualBox -- auto-detected via systemd-detect-virt, override
 #     with --hypervisor), baseline CLI packages. Optional categories are
@@ -56,7 +57,7 @@
 #     Author  : Tobias Tillstam, Tillnet (https://tillnet.se)
 #     GitHub  : https://github.com/tobiastillstam
 #     License : MIT
-#     Version : 1.2.2
+#     Version : 1.2.3
 #     Requires: bash 4+, coreutils, Ubuntu 22.04/24.04/26.04 with systemd + apt.
 #               Guest tools auto-detect the hypervisor (XCP-ng/Xen, KVM/
 #               Proxmox, VMware, Hyper-V, VirtualBox); only the XCP-ng and
@@ -73,6 +74,11 @@
 #               Key-based SSH access confirmed intact after --harden.
 #               22.04/24.04 use the same code paths but haven't been
 #               separately re-verified live since v1.2.1.
+#               step_ntp_chrony() (v1.2.3) separately verified live: default
+#               server, --ntp-server override/change detection, --dry-run
+#               preview, idempotency, and the chrony-not-installed install
+#               path (apt correctly swaps out ntpsec, the competing
+#               time-daemon alternative, for chrony).
 #
 #     Conventions (mirrors the Tillnet PowerShell/Bash template):
 #       - Strict mode (set -Eeuo pipefail) is the error-handling backbone.
@@ -107,7 +113,7 @@ IFS=$'\n\t'
 # -----------------------------------------------------------------------------
 # Metadata
 # -----------------------------------------------------------------------------
-readonly VERSION="1.2.2"
+readonly VERSION="1.2.3"
 # BASH_SOURCE is empty (not just unset-to-"") when the script arrives via a
 # `curl | bash` pipe -- there's no file, so fall back to the CWD and the
 # project's own name instead of dereferencing BASH_SOURCE[0] under set -u.
@@ -168,6 +174,12 @@ readonly ZABBIX_AGENT_PORT="10050"   # Agent2's listen port for passive checks
 # files, so this must sort before other drop-ins (e.g. cloud-init's
 # 50-cloud-init.conf, which sets PasswordAuthentication yes) to win.
 readonly SSH_DROPIN="/etc/ssh/sshd_config.d/00-tillnet-hardening.conf"
+# Ubuntu switched the default time-sync daemon from systemd-timesyncd to
+# chrony as of 25.10 (https://ubuntu.com/server/docs/explanation/networking/
+# about-time-synchronisation/); step_ntp() dispatches on this.
+readonly CHRONY_MIN_VERSION="25.10"
+readonly CHRONY_DROPIN="/etc/chrony/sources.d/00-tillnet-ntp.sources"
+readonly CHRONY_VENDOR_POOLS="/etc/chrony/sources.d/ubuntu-ntp-pools.sources"
 TMP_ZABBIX_DEB=""   # set by step_zabbix_agent2 if it downloads one; cleaned up on exit
 
 # Populated by detect_os(); used by step_zabbix_agent2 for the repo URL
@@ -429,7 +441,8 @@ Core options:
 
 Core settings:
       --timezone TZ            Timezone to set (default: ${TIMEZONE}).
-      --ntp-server HOST        NTP server for timesyncd (default: ${NTP_SERVER}).
+      --ntp-server HOST        NTP server (systemd-timesyncd, or chrony on
+                                Ubuntu 25.10+/26.04). Default: ${NTP_SERVER}.
       --hypervisor VALUE       auto (default) | xcpng | kvm | vmware | hyperv |
                                 virtualbox | none. Overrides guest-tools
                                 auto-detection (systemd-detect-virt); "kvm"
@@ -656,7 +669,34 @@ step_timezone() {
     return 0
 }
 
+# _ntp_verify_synced: shared tail for both step_ntp_* implementations --
+# enables/starts the given time-sync service and checks NTPSynchronized via
+# timedatectl, which reports correctly for either backend (both implement
+# the same systemd-timedate1 D-Bus interface).
+_ntp_verify_synced() {
+    local service="$1"
+    if [[ "${DO_FIX}" -eq 1 && "${DRY_RUN}" -eq 0 ]]; then
+        systemctl enable --now "${service}" >/dev/null 2>&1 || true
+        sleep 2
+        local synced
+        synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo no)"
+        if [[ "${synced}" == "yes" ]]; then
+            log_info "Time is synchronized"
+        else
+            log_warn "Time not yet reported as synchronized (can take a bit after first boot/network)"
+        fi
+    fi
+}
+
 step_ntp() {
+    if dpkg --compare-versions "${OS_VERSION_ID}" ge "${CHRONY_MIN_VERSION}" 2>/dev/null; then
+        step_ntp_chrony
+    else
+        step_ntp_timesyncd
+    fi
+}
+
+step_ntp_timesyncd() {
     local conf="/etc/systemd/timesyncd.conf"
     if [[ ! -f "${conf}" ]]; then
         if [[ "${DO_FIX}" -eq 1 ]]; then
@@ -688,17 +728,47 @@ step_ntp() {
         log_warn "NTP is '${current:-unset}', expected '${NTP_SERVER}'. Re-run with --fix to change."
     fi
 
-    if [[ "${DO_FIX}" -eq 1 && "${DRY_RUN}" -eq 0 ]]; then
-        systemctl enable --now systemd-timesyncd >/dev/null 2>&1 || true
-        sleep 2
-        local synced
-        synced="$(timedatectl show -p NTPSynchronized --value 2>/dev/null || echo no)"
-        if [[ "${synced}" == "yes" ]]; then
-            log_info "Time is synchronized"
+    _ntp_verify_synced systemd-timesyncd
+    return 0
+}
+
+# step_ntp_chrony: Ubuntu 25.10+ ships chrony by default, pointed at 4
+# NTS-secured *.ntp.ubuntu.com pool sources via ${CHRONY_VENDOR_POOLS}.
+# --ntp-server is documented (and behaves, under timesyncd) as a hard
+# override -- the configured server, not just a candidate among others --
+# so this replicates that: write our own sources.d drop-in with exactly one
+# `server` line, and comment out the vendor pools file so chrony doesn't
+# keep using it alongside ours. That does forgo Ubuntu's default NTS pools;
+# that's the intended trade-off of setting --ntp-server explicitly.
+step_ntp_chrony() {
+    if ! package_installed chrony; then
+        if [[ "${DO_FIX}" -eq 1 ]]; then
+            wait_for_apt_lock
+            run "install chrony" env DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y chrony || return 1
         else
-            log_warn "Time not yet reported as synchronized (can take a bit after first boot/network)"
+            log_warn "chrony not installed (Ubuntu ${OS_VERSION_ID}'s default NTP daemon)." \
+                "Re-run with --fix to install and configure it."
+            return 0
         fi
     fi
+    local current
+    current="$(grep -E '^\s*server\s+' "${CHRONY_DROPIN}" 2>/dev/null | awk '{print $2}' | head -n1 || true)"
+    if [[ "${current}" == "${NTP_SERVER}" ]]; then
+        log_info "NTP server already set to ${NTP_SERVER} (chrony)"
+    elif [[ "${DO_FIX}" -eq 1 ]]; then
+        run "write ${CHRONY_DROPIN} (server ${NTP_SERVER}, currently '${current:-unset}')" \
+            bash -c "printf 'server %s iburst\n' '${NTP_SERVER}' > '${CHRONY_DROPIN}'" || return 1
+        if [[ -f "${CHRONY_VENDOR_POOLS}" ]]; then
+            run "comment out default Ubuntu NTP pools in ${CHRONY_VENDOR_POOLS} (superseded by ${NTP_SERVER})" \
+                sed -i -E '/^[[:space:]]*(#|$)/!s/^/# /' "${CHRONY_VENDOR_POOLS}" || return 1
+        fi
+        run "restart chrony" systemctl restart chrony || return 1
+    else
+        log_warn "NTP is '${current:-unset}', expected '${NTP_SERVER}' (chrony). Re-run with --fix to change."
+    fi
+
+    _ntp_verify_synced chrony
     return 0
 }
 

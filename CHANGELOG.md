@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-09-21
+
+### Fixed
+- NTP: Ubuntu replaced `systemd-timesyncd` with `chrony` as the default
+  time-sync daemon starting with 25.10 (carries into 26.04) - see
+  [Ubuntu's time synchronization docs](https://ubuntu.com/server/docs/explanation/networking/about-time-synchronisation/).
+  The script was still force-installing `systemd-timesyncd` on 26.04,
+  displacing the OS's actual default. `step_ntp()` now dispatches on
+  `OS_VERSION_ID` (`dpkg --compare-versions ... ge 25.10`): 22.04/24.04 keep
+  the existing `systemd-timesyncd`/`timesyncd.conf` path unchanged; 25.10+
+  uses a new `step_ntp_chrony()` that writes a dedicated
+  `/etc/chrony/sources.d/00-tillnet-ntp.sources` drop-in and comments out
+  Ubuntu's default 4-server NTS pool file, so `--ntp-server` keeps its
+  existing "hard override" meaning on both backends. `timedatectl`'s
+  `NTPSynchronized` check (used to confirm sync after `--fix`) needed no
+  change - it reports correctly for either backend.
+
+### Verified
+- Live on Ubuntu 26.04.1 LTS/XCP-ng: audit mode, `--dry-run --fix`, a real
+  `--fix` with the default server, `--ntp-server` pointed at a different
+  server (change detection + resync), idempotency after each, and the
+  chrony-not-installed install path (apt correctly swaps out `ntpsec`, the
+  competing time-daemon alternative, for `chrony`).
+
 ## [1.2.2] - 2026-09-19
 
 ### Fixed

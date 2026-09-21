@@ -3,7 +3,7 @@
 ![Bash](https://img.shields.io/badge/Bash-4%2B-4EAA25)
 ![Platform](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-E95420)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-1.2.2-blue)
+![Version](https://img.shields.io/badge/version-1.2.3-blue)
 
 Post-install housekeeping for a freshly installed Ubuntu VM. Detects current
 state and reports it; only changes anything when `--fix` is given (always
@@ -19,7 +19,8 @@ otherwise, e.g. under automation or a `curl | bash` pipe.
 
 - Enables the `universe` apt repo
 - Full `apt update && apt full-upgrade && apt autoremove && apt autoclean`
-- Timezone and NTP (`systemd-timesyncd`)
+- Timezone and NTP (`systemd-timesyncd`, or `chrony` on Ubuntu 25.10+/26.04 -
+  Ubuntu's own default since 25.10)
 - Guest tools matching the detected hypervisor - XCP-ng/Xen, KVM/Proxmox,
   VMware, Hyper-V, VirtualBox (auto-detected via `systemd-detect-virt`,
   override with `--hypervisor`)
@@ -123,7 +124,7 @@ sudo ./ubuntu-vm-bootstrap.sh --yes --fix --harden --swap \
 | `-v, --verbose` / `-q, --quiet` | Debug-level output / warnings and errors only. |
 | `--log-file PATH` | Also append logs to PATH. |
 | `--timezone TZ` | Timezone to set (default: `Europe/Stockholm`). |
-| `--ntp-server HOST` | NTP server for timesyncd (default: `ntp.se`). |
+| `--ntp-server HOST` | NTP server (systemd-timesyncd, or chrony on Ubuntu 25.10+/26.04). Default: `ntp.se`. |
 | `--hypervisor VALUE` | Override guest-tools auto-detection. |
 | `-h, --help` / `--version` | Show help / version and exit. |
 
