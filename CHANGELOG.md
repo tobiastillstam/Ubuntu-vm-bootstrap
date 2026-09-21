@@ -4,7 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-09-21
+
+### Added
+- `--ssh-pubkey KEY`: authorizes the given public key (written to the
+  invoking `sudo` user's, or root's, `authorized_keys`) before `--harden`'s
+  safety check runs, so a VM with no key yet can be hardened in one pass
+  instead of needing a separate `ssh-copy-id` round trip first. Rejects
+  anything that doesn't look like a public key (wrong type prefix, or a
+  private key pasted by mistake) rather than writing it blindly. Available
+  as a flag and as a wizard prompt (blank to skip, if a key's already in
+  place). Deliberately never generates or handles a *private* key - the
+  script only ever receives a public key the operator already has.
 
 ### Verified
 - `--harden`'s lockout-safety refusal (no `authorized_keys` anywhere, no
@@ -15,6 +26,12 @@ All notable changes to this project are documented here. The format is based on
   prior `--harden` test had a key pre-added, so this was the first time
   the actual anti-lockout mechanism - not just "key still works after
   hardening" - was exercised.
+- `--ssh-pubkey` live: malformed-key rejection (no write), audit-mode
+  warning (no write), `--dry-run` preview (no write), a real `--fix` run
+  (correct file/ownership/permissions, hardening succeeds, and the
+  freshly-authorized key was used to actually log back in, proving it
+  works rather than just exists), and idempotency on a second run with the
+  same key (no duplicate line).
 
 ## [1.2.3] - 2026-09-21
 

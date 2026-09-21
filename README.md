@@ -3,7 +3,7 @@
 ![Bash](https://img.shields.io/badge/Bash-4%2B-4EAA25)
 ![Platform](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-E95420)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-1.2.3-blue)
+![Version](https://img.shields.io/badge/version-1.3.0-blue)
 
 Post-install housekeeping for a freshly installed Ubuntu VM. Detects current
 state and reports it; only changes anything when `--fix` is given (always
@@ -32,7 +32,7 @@ otherwise, e.g. under automation or a `curl | bash` pipe.
 
 | Flag | Does |
 | --- | --- |
-| `--harden` | SSH: disable root login + password auth (key-only). Refuses if no `authorized_keys` is found, unless `--force-ssh`. Also enables UFW (allow OpenSSH, default deny incoming). |
+| `--harden` | SSH: disable root login + password auth (key-only). Refuses if no `authorized_keys` is found, unless `--force-ssh` or `--ssh-pubkey KEY` (authorizes that key first, so a VM with no key yet can still be hardened safely - written to the invoking `sudo` user's, or root's, `authorized_keys`; never a private key). Also enables UFW (allow OpenSSH, default deny incoming). |
 | `--swap` | Creates a swap file (`--swap-size`, default 2G). Skipped if swap already exists or there isn't enough free disk space. |
 | `--unattended-upgrades` | Enables unattended security upgrades, with automatic reboot disabled. |
 | `--zabbix` | Installs Zabbix Agent2 with PSK encryption (`--zabbix-server` required). Opens a UFW rule for the Zabbix server if UFW is active. |
@@ -109,7 +109,7 @@ sudo ./ubuntu-vm-bootstrap.sh --yes --fix --harden --swap \
 ./ubuntu-vm-bootstrap.sh [-y|--yes] [-n|--dry-run] [--fix] [-v|--verbose]
                          [-q|--quiet] [--log-file PATH]
                          [--hypervisor auto|xcpng|kvm|vmware|hyperv|virtualbox|none]
-                         [--harden] [--force-ssh]
+                         [--harden] [--force-ssh] [--ssh-pubkey KEY]
                          [--swap] [--swap-size SIZE]
                          [--unattended-upgrades]
                          [--zabbix --zabbix-server ADDRESS]
@@ -139,7 +139,8 @@ optional-category flag.
 - `--dry-run` previews exactly what `--fix` would do, without touching the
   system, and does not require root.
 - `--harden` refuses to disable SSH password auth if no `authorized_keys` is
-  found anywhere on the system (would lock you out) - override with
+  found anywhere on the system (would lock you out) - authorize a key first
+  with `--ssh-pubkey KEY` (never pass a private key), or override with
   `--force-ssh` only if you are certain another access path exists.
 - A generated Zabbix PSK is printed to the terminal once, and only there - it
   is never written to `--log-file` or any log.

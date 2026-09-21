@@ -26,7 +26,7 @@
 #     ./ubuntu-vm-bootstrap.sh [-y|--yes] [-n|--dry-run] [--fix] [-v|--verbose]
 #                              [-q|--quiet] [--log-file PATH]
 #                              [--hypervisor auto|xcpng|kvm|vmware|hyperv|virtualbox|none]
-#                              [--harden] [--force-ssh]
+#                              [--harden] [--force-ssh] [--ssh-pubkey KEY]
 #                              [--swap] [--swap-size SIZE]
 #                              [--unattended-upgrades]
 #                              [--zabbix --zabbix-server ADDRESS]
@@ -57,7 +57,7 @@
 #     Author  : Tobias Tillstam, Tillnet (https://tillnet.se)
 #     GitHub  : https://github.com/tobiastillstam
 #     License : MIT
-#     Version : 1.2.3
+#     Version : 1.3.0
 #     Requires: bash 4+, coreutils, Ubuntu 22.04/24.04/26.04 with systemd + apt.
 #               Guest tools auto-detect the hypervisor (XCP-ng/Xen, KVM/
 #               Proxmox, VMware, Hyper-V, VirtualBox); only the XCP-ng and
@@ -88,6 +88,15 @@
 #               prior --harden test had a key pre-added, so this was the
 #               first time the actual anti-lockout mechanism (not just
 #               "key still works after hardening") was exercised.
+#               --ssh-pubkey (v1.3.0) separately verified live: rejects a
+#               malformed/non-pubkey value without writing anything; audit
+#               mode (no --fix) warns and doesn't write; --dry-run previews
+#               without writing; a real --fix run writes the key to the
+#               invoking sudo user's authorized_keys with correct
+#               ownership/permissions (600, sudo user:group) and the
+#               freshly-authorized key was used to actually log in
+#               afterward, proving it's functional, not just present; a
+#               second run with the same key doesn't duplicate the line.
 #
 #     Conventions (mirrors the Tillnet PowerShell/Bash template):
 #       - Strict mode (set -Eeuo pipefail) is the error-handling backbone.
@@ -122,7 +131,7 @@ IFS=$'\n\t'
 # -----------------------------------------------------------------------------
 # Metadata
 # -----------------------------------------------------------------------------
-readonly VERSION="1.2.3"
+readonly VERSION="1.3.0"
 # BASH_SOURCE is empty (not just unset-to-"") when the script arrives via a
 # `curl | bash` pipe -- there's no file, so fall back to the CWD and the
 # project's own name instead of dereferencing BASH_SOURCE[0] under set -u.
@@ -149,6 +158,7 @@ SKIP_WIZARD=0   # -y/--yes: skip interactive prompts, use flags/defaults only
 
 DO_HARDEN=0
 FORCE_SSH=0
+SSH_PUBKEY=""   # --ssh-pubkey: authorized before the found-key check in step_ssh_hardening()
 DO_SWAP=0
 SWAP_SIZE="2G"
 DO_UNATTENDED=0
@@ -393,6 +403,13 @@ run_wizard() {
     local harden_default="n"; [[ "${DO_HARDEN}" -eq 1 ]] && harden_default="y"
     ask_yesno "Harden SSH (disable root login + password auth, key-only) and enable UFW?" "${harden_default}"
     DO_HARDEN="${REPLY_YESNO}"
+    if [[ "${DO_HARDEN}" -eq 1 ]]; then
+        printf 'If this system has no authorized_keys yet, paste a public key to\n' > /dev/tty
+        printf 'authorize now -- otherwise leave blank if one is already in place.\n' > /dev/tty
+        printf 'Never paste a private key here.\n' > /dev/tty
+        ask_value "SSH public key (e.g. ssh-ed25519 AAAA... you@host)" "${SSH_PUBKEY}"
+        SSH_PUBKEY="${REPLY_VALUE}"
+    fi
 
     local swap_default="n"; [[ "${DO_SWAP}" -eq 1 ]] && swap_default="y"
     ask_yesno "Create a swap file?" "${swap_default}"
@@ -421,7 +438,8 @@ run_wizard() {
 
     printf '\n' > /dev/tty
     log_info "Setup: fix=${DO_FIX} dry_run=${DRY_RUN} timezone=${TIMEZONE} ntp=${NTP_SERVER}" \
-              "harden=${DO_HARDEN} swap=${DO_SWAP}(${SWAP_SIZE}) unattended=${DO_UNATTENDED}" \
+              "harden=${DO_HARDEN}(pubkey=$([[ -n "${SSH_PUBKEY}" ]] && echo yes || echo no))" \
+              "swap=${DO_SWAP}(${SWAP_SIZE}) unattended=${DO_UNATTENDED}" \
               "zabbix=${DO_ZABBIX}(${ZABBIX_SERVER:-n/a})"
 }
 
@@ -464,6 +482,11 @@ Optional categories (require --fix to take effect):
                                 terminal is attached.
                                 Also enables UFW (allow OpenSSH, default deny incoming).
       --force-ssh               Skip the authorized_keys safety check for --harden.
+      --ssh-pubkey KEY          Authorize this public key (e.g. "ssh-ed25519 AAAA...
+                                you@host") before --harden's safety check runs, so
+                                a VM with no key yet can still be hardened safely.
+                                Written to the invoking sudo user's (or root's)
+                                authorized_keys. Never a private key -- see README.
       --swap                    Create a swap file (skipped if swap already exists).
       --swap-size SIZE          Swap file size (default: ${SWAP_SIZE}).
       --unattended-upgrades     Enable unattended security upgrades (no auto-reboot).
@@ -491,6 +514,10 @@ parse_args() {
 
             --harden)     DO_HARDEN=1 ;;
             --force-ssh)  FORCE_SSH=1 ;;
+            --ssh-pubkey)
+                [[ $# -ge 2 ]] || { log_error "--ssh-pubkey needs an argument."; exit 2; }
+                SSH_PUBKEY="$2"; shift ;;
+            --ssh-pubkey=*) SSH_PUBKEY="${1#*=}" ;;
             --swap)       DO_SWAP=1 ;;
             --swap-size)
                 [[ $# -ge 2 ]] || { log_error "--swap-size needs an argument."; exit 2; }
@@ -938,11 +965,51 @@ step_baseline_packages() {
 # -----------------------------------------------------------------------------
 # Optional categories (each also gated by its own --flag in do_work)
 # -----------------------------------------------------------------------------
+# _install_ssh_pubkey: writes SSH_PUBKEY into the invoking sudo user's (or
+# root's, if run directly as root) authorized_keys, so step_ssh_hardening()'s
+# found-key check passes without a separate ssh-copy-id round trip. Only ever
+# handles a *public* key -- never generates or receives a private one.
+_install_ssh_pubkey() {
+    if [[ ! "${SSH_PUBKEY}" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)[[:space:]]+[A-Za-z0-9+/]+=*([[:space:]]+.*)?$ ]]; then
+        log_error "--ssh-pubkey doesn't look like a public key (wrong type prefix, or" \
+            "you pasted a private key by mistake) -- refusing to write it"
+        return 1
+    fi
+    local target_user
+    if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        target_user="${SUDO_USER}"
+    else
+        target_user="root"
+    fi
+    local target_home
+    target_home="$(getent passwd "${target_user}" | cut -d: -f6)"
+    if [[ -z "${target_home}" ]]; then
+        log_error "Can't resolve a home directory for '${target_user}' -- not writing --ssh-pubkey"
+        return 1
+    fi
+    local target="${target_home}/.ssh/authorized_keys"
+    run "authorize the provided SSH public key for ${target_user} (${target})" bash -c "
+        install -d -m 700 -o '${target_user}' -g '${target_user}' '${target_home}/.ssh'
+        touch '${target}'
+        grep -qxF -- '${SSH_PUBKEY}' '${target}' 2>/dev/null || printf '%s\n' '${SSH_PUBKEY}' >> '${target}'
+        chmod 600 '${target}'
+        chown '${target_user}:${target_user}' '${target}'
+    "
+}
+
 step_ssh_hardening() {
+    if [[ -n "${SSH_PUBKEY}" ]]; then
+        if [[ "${DO_FIX}" -eq 1 ]]; then
+            _install_ssh_pubkey || return 1
+        else
+            log_warn "SSH public key provided via --ssh-pubkey but --fix not given -- not writing it (audit mode)."
+        fi
+    fi
     local found_key=0
     for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
         [[ -s "${f}" ]] && found_key=1
     done
+    [[ -n "${SSH_PUBKEY}" && "${DO_FIX}" -eq 1 && "${DRY_RUN}" -eq 1 ]] && found_key=1
     if [[ "${found_key}" -eq 0 && "${FORCE_SSH}" -eq 0 && "${TTY_AVAILABLE}" -eq 1 ]]; then
         log_warn "No authorized_keys found anywhere on this system."
         ask_yesno "Disabling password auth without a key could lock you out. Continue anyway?" "n"
