@@ -3,7 +3,7 @@
 ![Bash](https://img.shields.io/badge/Bash-4%2B-4EAA25)
 ![Platform](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20%7C%2026.04-E95420)
 ![License](https://img.shields.io/badge/License-MIT-green)
-![Version](https://img.shields.io/badge/version-1.3.0-blue)
+![Version](https://img.shields.io/badge/version-1.4.0-blue)
 
 Post-install housekeeping for a freshly installed Ubuntu VM. Detects current
 state and reports it; only changes anything when `--fix` is given (always
@@ -34,6 +34,7 @@ otherwise, e.g. under automation or a `curl | bash` pipe.
 | --- | --- |
 | `--harden` | SSH: disable root login + password auth (key-only). Refuses if no `authorized_keys` is found, unless `--force-ssh` or `--ssh-pubkey KEY` (authorizes that key first, so a VM with no key yet can still be hardened safely - written to the invoking `sudo` user's, or root's, `authorized_keys`; never a private key). Also enables UFW (allow OpenSSH, default deny incoming). |
 | `--swap` | Creates a swap file (`--swap-size`, default 2G). Skipped if swap already exists or there isn't enough free disk space. |
+| `--extend-lvm` | If `/` is on a single-PV LVM volume group, grows the disk partition into any unpartitioned space (e.g. after enlarging the virtual disk in the hypervisor), then extends the PV/LV and filesystem to use all free space - both newly-grown and already-unallocated in the VG. Needs root even to check. Skips (doesn't guess) on a non-LVM root or a multi-PV VG. |
 | `--unattended-upgrades` | Enables unattended security upgrades, with automatic reboot disabled. |
 | `--zabbix` | Installs Zabbix Agent2 with PSK encryption (`--zabbix-server` required). Opens a UFW rule for the Zabbix server if UFW is active. |
 
@@ -43,7 +44,8 @@ otherwise, e.g. under automation or a `curl | bash` pipe.
 
 - Ubuntu 22.04 / 24.04 / 26.04, with `systemd` and `apt`.
 - Bash 4+ (this is not a POSIX `sh` script - run it with `bash`, not `sh`).
-- `sudo`/root only for `--fix`; a plain audit run needs no privilege.
+- `sudo`/root only for `--fix`; a plain audit run needs no privilege (except
+  `--extend-lvm`, which needs root even to check - see Safety notes).
 - Interactive mode additionally needs a controlling terminal (`/dev/tty`) -
   falls back to flags/defaults with a warning if none is attached.
 
@@ -110,7 +112,7 @@ sudo ./ubuntu-vm-bootstrap.sh --yes --fix --harden --swap \
                          [-q|--quiet] [--log-file PATH]
                          [--hypervisor auto|xcpng|kvm|vmware|hyperv|virtualbox|none]
                          [--harden] [--force-ssh] [--ssh-pubkey KEY]
-                         [--swap] [--swap-size SIZE]
+                         [--swap] [--swap-size SIZE] [--extend-lvm]
                          [--unattended-upgrades]
                          [--zabbix --zabbix-server ADDRESS]
                          [--timezone TZ] [--ntp-server HOST] [-h|--help]
@@ -137,7 +139,8 @@ optional-category flag.
 
 - A plain run (no `--fix`) changes nothing - audit/report only.
 - `--dry-run` previews exactly what `--fix` would do, without touching the
-  system, and does not require root.
+  system, and does not require root - except `--extend-lvm`'s check, which
+  needs root even to preview (it reads the partition table directly).
 - `--harden` refuses to disable SSH password auth if no `authorized_keys` is
   found anywhere on the system (would lock you out) - authorize a key first
   with `--ssh-pubkey KEY` (never pass a private key), or override with

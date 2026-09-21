@@ -27,7 +27,7 @@
 #                              [-q|--quiet] [--log-file PATH]
 #                              [--hypervisor auto|xcpng|kvm|vmware|hyperv|virtualbox|none]
 #                              [--harden] [--force-ssh] [--ssh-pubkey KEY]
-#                              [--swap] [--swap-size SIZE]
+#                              [--swap] [--swap-size SIZE] [--extend-lvm]
 #                              [--unattended-upgrades]
 #                              [--zabbix --zabbix-server ADDRESS]
 #                              [--timezone TZ] [--ntp-server HOST] [-h|--help]
@@ -57,7 +57,7 @@
 #     Author  : Tobias Tillstam, Tillnet (https://tillnet.se)
 #     GitHub  : https://github.com/tobiastillstam
 #     License : MIT
-#     Version : 1.3.0
+#     Version : 1.4.0
 #     Requires: bash 4+, coreutils, Ubuntu 22.04/24.04/26.04 with systemd + apt.
 #               Guest tools auto-detect the hypervisor (XCP-ng/Xen, KVM/
 #               Proxmox, VMware, Hyper-V, VirtualBox); only the XCP-ng and
@@ -97,6 +97,20 @@
 #               freshly-authorized key was used to actually log in
 #               afterward, proving it's functional, not just present; a
 #               second run with the same key doesn't duplicate the line.
+#               --extend-lvm (v1.4.0) verified live on a VM whose virtual
+#               disk was enlarged post-install (50G disk, ~40G partitioned):
+#               correctly detected both unpartitioned disk space AND space
+#               already unallocated in the VG; non-root and root-audit paths
+#               report without changing anything; a real --fix run grew the
+#               partition (growpart), PV (pvresize), and LV+filesystem
+#               (lvextend -r) in one pass with zero downtime -- confirmed via
+#               the kernel's own dmesg resize log and `dumpe2fs -h` reporting
+#               "Filesystem state: clean" afterward, not just exit codes;
+#               idempotent on a second run ("nothing to extend"); ran
+#               cleanly alongside --harden/--swap/--unattended-upgrades in
+#               one combined --fix. Not live-tested: a non-LVM root (skip
+#               path reviewed by inspection only) and a multi-PV VG (skip
+#               path likewise not exercised against a real multi-disk VG).
 #
 #     Conventions (mirrors the Tillnet PowerShell/Bash template):
 #       - Strict mode (set -Eeuo pipefail) is the error-handling backbone.
@@ -131,7 +145,7 @@ IFS=$'\n\t'
 # -----------------------------------------------------------------------------
 # Metadata
 # -----------------------------------------------------------------------------
-readonly VERSION="1.3.0"
+readonly VERSION="1.4.0"
 # BASH_SOURCE is empty (not just unset-to-"") when the script arrives via a
 # `curl | bash` pipe -- there's no file, so fall back to the CWD and the
 # project's own name instead of dereferencing BASH_SOURCE[0] under set -u.
@@ -161,6 +175,7 @@ FORCE_SSH=0
 SSH_PUBKEY=""   # --ssh-pubkey: authorized before the found-key check in step_ssh_hardening()
 DO_SWAP=0
 SWAP_SIZE="2G"
+DO_EXTEND_LVM=0
 DO_UNATTENDED=0
 DO_ZABBIX=0
 ZABBIX_SERVER=""
@@ -419,6 +434,10 @@ run_wizard() {
         SWAP_SIZE="${REPLY_VALUE}"
     fi
 
+    local extend_lvm_default="n"; [[ "${DO_EXTEND_LVM}" -eq 1 ]] && extend_lvm_default="y"
+    ask_yesno "If the root filesystem is on LVM, grow it to use any unused disk space?" "${extend_lvm_default}"
+    DO_EXTEND_LVM="${REPLY_YESNO}"
+
     local unattended_default="n"; [[ "${DO_UNATTENDED}" -eq 1 ]] && unattended_default="y"
     ask_yesno "Enable unattended security upgrades (no auto-reboot)?" "${unattended_default}"
     DO_UNATTENDED="${REPLY_YESNO}"
@@ -439,7 +458,7 @@ run_wizard() {
     printf '\n' > /dev/tty
     log_info "Setup: fix=${DO_FIX} dry_run=${DRY_RUN} timezone=${TIMEZONE} ntp=${NTP_SERVER}" \
               "harden=${DO_HARDEN}(pubkey=$([[ -n "${SSH_PUBKEY}" ]] && echo yes || echo no))" \
-              "swap=${DO_SWAP}(${SWAP_SIZE}) unattended=${DO_UNATTENDED}" \
+              "swap=${DO_SWAP}(${SWAP_SIZE}) extend_lvm=${DO_EXTEND_LVM} unattended=${DO_UNATTENDED}" \
               "zabbix=${DO_ZABBIX}(${ZABBIX_SERVER:-n/a})"
 }
 
@@ -489,6 +508,12 @@ Optional categories (require --fix to take effect):
                                 authorized_keys. Never a private key -- see README.
       --swap                    Create a swap file (skipped if swap already exists).
       --swap-size SIZE          Swap file size (default: ${SWAP_SIZE}).
+      --extend-lvm              If the root filesystem is on a single-PV LVM volume
+                                group, grow the disk partition into any unpartitioned
+                                space (e.g. after enlarging the virtual disk), then
+                                extend the PV/LV and filesystem to use all free space.
+                                Needs root even to check (reads the partition table
+                                directly) -- see README for what it skips and why.
       --unattended-upgrades     Enable unattended security upgrades (no auto-reboot).
       --zabbix                  Install Zabbix Agent2 with PSK encryption. Also opens
                                  UFW to the Zabbix server on tcp/${ZABBIX_AGENT_PORT} if UFW is active.
@@ -523,6 +548,7 @@ parse_args() {
                 [[ $# -ge 2 ]] || { log_error "--swap-size needs an argument."; exit 2; }
                 SWAP_SIZE="$2"; shift ;;
             --swap-size=*) SWAP_SIZE="${1#*=}" ;;
+            --extend-lvm) DO_EXTEND_LVM=1 ;;
             --unattended-upgrades) DO_UNATTENDED=1 ;;
             --zabbix)     DO_ZABBIX=1 ;;
             --zabbix-server)
@@ -1116,6 +1142,125 @@ step_swap() {
     return 0
 }
 
+# step_extend_lvm: if / is on a single-PV LVM volume group, grow the disk
+# partition into any unpartitioned space (e.g. the virtual disk was enlarged
+# in the hypervisor after install), then extend the PV/LV and filesystem to
+# use whatever's free -- both what was already unallocated in the VG (common:
+# the Ubuntu installer's default LVM layout doesn't give the root LV 100% of
+# the VG) and what growpart just added.
+#
+# Every check here needs root -- growpart (even --dry-run) reads the
+# partition table directly via sfdisk, and lvs/pvs/vgs need the LVM lock
+# file, both permission-denied for a non-root user. So unlike other steps,
+# there's no meaningful audit-mode or unprivileged --dry-run preview here;
+# see the UFW step for the same constraint and rationale.
+#
+# Scope, deliberately: single-PV VGs only. A VG spanning multiple PVs means
+# multiple disks/partitions could each need growing independently, and
+# guessing which one grew (or extending onto the wrong one) is a worse
+# failure mode than just skipping and telling the operator to do it by hand.
+step_extend_lvm() {
+    if [[ "${EUID}" -ne 0 ]]; then
+        log_warn "Checking/extending LVM needs root (reads the partition table directly) -- re-run with sudo to check."
+        return 0
+    fi
+    if ! command -v lvs >/dev/null 2>&1; then
+        log_info "LVM tools not installed -- root filesystem is not on LVM, nothing to extend"
+        return 0
+    fi
+
+    local root_dev
+    root_dev="$(readlink -f "$(findmnt -n -o SOURCE / 2>/dev/null)" 2>/dev/null)"
+    if [[ -z "${root_dev}" ]]; then
+        log_warn "Could not determine root filesystem's source device -- skipping LVM extend check"
+        return 0
+    fi
+
+    local lv_path="" vg_name="" lvp vgn
+    while IFS='|' read -r lvp vgn; do
+        lvp="$(xargs <<<"${lvp}")"; vgn="$(xargs <<<"${vgn}")"
+        [[ -z "${lvp}" ]] && continue
+        if [[ "$(readlink -f "${lvp}")" == "${root_dev}" ]]; then
+            lv_path="${lvp}"; vg_name="${vgn}"
+            break
+        fi
+    done < <(lvs --noheadings -o lv_path,vg_name --separator '|' 2>/dev/null)
+
+    if [[ -z "${lv_path}" ]]; then
+        log_info "Root filesystem is not on LVM -- nothing to extend"
+        return 0
+    fi
+
+    local pv_count
+    pv_count="$(pvs --noheadings -o pv_name -S "vg_name=${vg_name}" 2>/dev/null | wc -l)"
+    if [[ "${pv_count}" -ne 1 ]]; then
+        log_warn "VG '${vg_name}' has ${pv_count} physical volumes -- auto-extend only supports a single-PV VG, skipping"
+        return 0
+    fi
+    local pv_name
+    pv_name="$(pvs --noheadings -o pv_name -S "vg_name=${vg_name}" 2>/dev/null | xargs)"
+
+    local part_dev part_base parent_disk part_num
+    part_dev="$(readlink -f "${pv_name}")"
+    part_base="$(basename "${part_dev}")"
+    parent_disk="$(lsblk -ndo pkname "${part_dev}" 2>/dev/null)"
+    part_num="$(cat "/sys/class/block/${part_base}/partition" 2>/dev/null || true)"
+    if [[ -z "${parent_disk}" || -z "${part_num}" ]]; then
+        log_warn "Could not resolve ${pv_name} to a parent disk + partition number -- skipping (not a simple partition-backed PV?)"
+        return 0
+    fi
+
+    if ! command -v growpart >/dev/null 2>&1; then
+        if [[ "${DO_FIX}" -eq 1 ]]; then
+            wait_for_apt_lock
+            run "install cloud-guest-utils (growpart)" env DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y cloud-guest-utils || return 1
+        else
+            log_warn "growpart not installed -- re-run with --fix --extend-lvm to install it and check for unused disk space."
+            return 0
+        fi
+    fi
+
+    local vg_free_extents
+    vg_free_extents="$(vgs --noheadings -o vg_free_count "${vg_name}" 2>/dev/null | xargs)"
+
+    local growpart_out part_growable=0
+    if growpart_out="$(growpart --dry-run "/dev/${parent_disk}" "${part_num}" 2>&1)"; then
+        part_growable=1
+    elif ! grep -q "NOCHANGE" <<<"${growpart_out}"; then
+        log_warn "growpart check on /dev/${parent_disk} ${part_num} failed unexpectedly: ${growpart_out}"
+    fi
+
+    if [[ "${part_growable}" -eq 0 && "${vg_free_extents:-0}" -eq 0 ]]; then
+        log_info "No unused disk space found for ${vg_name}/${lv_path##*/} -- nothing to extend"
+        return 0
+    fi
+
+    if [[ "${DO_FIX}" -eq 1 ]]; then
+        if [[ "${part_growable}" -eq 1 ]]; then
+            run "grow partition ${part_num} on /dev/${parent_disk} into unpartitioned disk space" \
+                growpart "/dev/${parent_disk}" "${part_num}" || return 1
+            run "resize PV ${pv_name} to match the grown partition" \
+                pvresize "${pv_name}" || return 1
+        fi
+        run "extend ${lv_path} to use all free space in ${vg_name} and grow its filesystem" \
+            lvextend -l +100%FREE -r "${lv_path}" || return 1
+        log_info "LVM extended: ${lv_path} now uses all available space in ${vg_name}"
+    else
+        local vg_free_human
+        vg_free_human="$(vgs --noheadings -o vg_free --units g "${vg_name}" 2>/dev/null | xargs)"
+        if [[ "${part_growable}" -eq 1 ]]; then
+            log_warn "Unpartitioned space found on /dev/${parent_disk} after partition ${part_num}, and ${vg_name}" \
+                "has ${vg_free_human} already free. Re-run with --fix --extend-lvm to grow the partition, PV, and" \
+                "${lv_path} (+filesystem)."
+        else
+            log_warn "${vg_name} has ${vg_free_human} free space not yet used by ${lv_path}." \
+                "Re-run with --fix --extend-lvm to extend it (+filesystem)."
+        fi
+    fi
+    return 0
+}
+
 step_unattended_upgrades() {
     if ! package_installed unattended-upgrades; then
         if [[ "${DO_FIX}" -eq 1 ]]; then
@@ -1295,6 +1440,9 @@ do_work() {
     fi
     if [[ "${DO_SWAP}" -eq 1 ]]; then
         if ! step_swap; then FAILED_CATEGORIES+=("swap"); overall_rc=1; fi
+    fi
+    if [[ "${DO_EXTEND_LVM}" -eq 1 ]]; then
+        if ! step_extend_lvm; then FAILED_CATEGORIES+=("extend LVM"); overall_rc=1; fi
     fi
     if [[ "${DO_UNATTENDED}" -eq 1 ]]; then
         if ! step_unattended_upgrades; then FAILED_CATEGORIES+=("unattended-upgrades"); overall_rc=1; fi

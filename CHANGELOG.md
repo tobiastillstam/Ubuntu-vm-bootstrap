@@ -4,6 +4,39 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-09-21
+
+### Added
+- `--extend-lvm`: if `/` is on a single-PV LVM volume group, grows the disk
+  partition into any unpartitioned space (e.g. after enlarging the virtual
+  disk in the hypervisor post-install), then extends the PV/LV and
+  filesystem to use everything free - both newly-grown space and whatever
+  was already unallocated in the VG (Ubuntu's installer doesn't give the
+  root LV 100% of the VG by default). Uses `growpart`
+  (`cloud-guest-utils`, installed under `--fix` if missing) + `pvresize` +
+  `lvextend -r`, all online, no downtime. Deliberately scoped to single-PV
+  VGs - a VG spanning multiple PVs means multiple disks/partitions could
+  each need growing independently, and guessing which one grew is a worse
+  failure mode than skipping and telling the operator to do it by hand.
+  Needs root even to check (reads the partition table directly via
+  `growpart`/`sfdisk`), so unlike other categories there's no meaningful
+  unprivileged audit or `--dry-run` preview here - same constraint as the
+  existing UFW status check.
+
+### Verified
+- Live on a VM whose virtual disk was enlarged post-install (50G disk,
+  ~40G partitioned, matching the actual scenario this feature targets):
+  correctly detected both unpartitioned disk space and already-unallocated
+  VG space; non-root and root-audit paths report without changing
+  anything; a real `--fix` run grew the partition, PV, and LV+filesystem
+  in one pass with zero downtime - confirmed via the kernel's own dmesg
+  resize log and `dumpe2fs -h` reporting `Filesystem state: clean`
+  afterward, not just exit codes; idempotent on a second run; ran cleanly
+  alongside `--harden`/`--swap`/`--unattended-upgrades` in one combined
+  `--fix`. Not live-tested: a non-LVM root and a multi-PV VG (both skip
+  paths reviewed by inspection only, not exercised against real hardware
+  matching those layouts).
+
 ## [1.3.0] - 2026-09-21
 
 ### Added
