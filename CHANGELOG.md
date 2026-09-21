@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Verified
+- `--harden`'s lockout-safety refusal (no `authorized_keys` anywhere, no
+  `--force-ssh`): tested live over a password-only session with no key
+  present on the system anywhere. Correctly logs an error, fails just that
+  one category, and leaves `sshd_config`/`PasswordAuthentication`
+  untouched; password login still worked immediately afterward. Every
+  prior `--harden` test had a key pre-added, so this was the first time
+  the actual anti-lockout mechanism - not just "key still works after
+  hardening" - was exercised.
+
 ## [1.2.3] - 2026-09-21
 
 ### Fixed

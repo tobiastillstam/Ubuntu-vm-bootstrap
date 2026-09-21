@@ -79,6 +79,15 @@
 #               preview, idempotency, and the chrony-not-installed install
 #               path (apt correctly swaps out ntpsec, the competing
 #               time-daemon alternative, for chrony).
+#               --harden's lockout-safety refusal (no authorized_keys
+#               anywhere, no --force-ssh) separately verified live: run over
+#               a password-only session with no key present anywhere on the
+#               system -- correctly logs an error, fails just that category,
+#               and leaves sshd_config/PasswordAuthentication untouched;
+#               password login still worked immediately afterward. Every
+#               prior --harden test had a key pre-added, so this was the
+#               first time the actual anti-lockout mechanism (not just
+#               "key still works after hardening") was exercised.
 #
 #     Conventions (mirrors the Tillnet PowerShell/Bash template):
 #       - Strict mode (set -Eeuo pipefail) is the error-handling backbone.
